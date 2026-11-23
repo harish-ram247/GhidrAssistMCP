@@ -14,6 +14,7 @@ import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
+import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.PcodeBlockBasic;
@@ -217,10 +218,14 @@ public class GetCodeTool implements McpTool {
     private McpSchema.CallToolResult getDisassemblyCode(Program program, Function function, TaskMonitor monitor) {
         StringBuilder result = new StringBuilder();
         result.append("Disassembly of function: ").append(function.getName(true)).append("\n");
-        result.append("Entry Point: ").append(function.getEntryPoint()).append("\n\n");
+        result.append("Entry Point: ").append(function.getEntryPoint()).append("\n");
+        result.append("Stored body: ").append(function.getBody()).append("\n\n");
+        return readInstructions(program, function.getBody(), monitor, result);
+    }
 
-        // Iterate through instructions in the function
-        InstructionIterator instrIter = program.getListing().getInstructions(function.getBody(), true);
+    static McpSchema.CallToolResult readInstructions(Program program, AddressSetView addresses,
+            TaskMonitor monitor, StringBuilder result) {
+        InstructionIterator instrIter = program.getListing().getInstructions(addresses, true);
 
         int instructionCount = 0;
         while (instrIter.hasNext()) {

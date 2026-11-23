@@ -1,5 +1,8 @@
 package ghidrassistmcp;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -7,20 +10,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Permits can be released by a different thread after an asynchronous task really exits.
  */
 public final class ProjectOperationGate {
-    private int activeOperations;
+    private final Map<Object, String> activeOperations = new LinkedHashMap<>();
     private boolean transitionActive;
 
-    public synchronized Runnable acquireOperation() {
+    public Runnable acquireOperation() { return acquireOperation("MCP request"); }
+
+    public synchronized Runnable acquireOperation(String name) {
         if (transitionActive) {
             throw new IllegalStateException("A Ghidra project operation is in progress. Retry after it completes.");
         }
-        activeOperations++;
-        AtomicBoolean released = new AtomicBoolean();
+        Object permit = new Object();
+        activeOperations.put(permit, name);
         return () -> {
-            if (released.compareAndSet(false, true)) {
-                synchronized (ProjectOperationGate.this) {
-                    activeOperations--;
-                }
+            synchronized (ProjectOperationGate.this) {
+                activeOperations.remove(permit);
             }
         };
     }
@@ -29,9 +32,10 @@ public final class ProjectOperationGate {
         if (transitionActive) {
             throw new IllegalStateException("A Ghidra project operation is already in progress. Retry after it completes.");
         }
-        if (activeOperations != 0) {
+        if (!activeOperations.isEmpty()) {
             throw new IllegalStateException("Cannot change or save the Ghidra project while "
-                + activeOperations + " MCP operations are active. Wait for them to finish, then retry.");
+                + activeOperations.size() + (activeOperations.size() == 1 ? " MCP operation is active (" : " MCP operations are active (")
+                + String.join(", ", new TreeSet<>(activeOperations.values())) + "). Wait for them to finish, then retry.");
         }
         transitionActive = true;
         AtomicBoolean released = new AtomicBoolean();

@@ -97,10 +97,12 @@ public class AnalysisControlTool implements McpTool {
                 continue;
             }
             AutoAnalysisManager manager = AutoAnalysisManager.getAnalysisManager(program);
+            int requests = AnalysisUtils.cancelActiveAnalyses(program);
             manager.cancelQueuedTasks();
             sb.append("- ").append(program.getName())
-              .append(": requested cancellation of queued analysis tasks. ")
-              .append("An active analyzer may continue until its current monitor observes cancellation.\n");
+              .append(": requested cancellation of queued tasks and ")
+              .append(requests).append(" active MCP analysis request(s). Is Analyzing: ")
+              .append(manager.isAnalyzing()).append("\n");
         }
         return textResult(sb.toString().trim());
     }

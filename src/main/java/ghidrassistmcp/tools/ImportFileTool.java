@@ -17,23 +17,23 @@ import ghidra.app.util.opinion.BinaryLoader;
 import ghidra.app.util.opinion.LoadResults;
 import ghidra.framework.model.Project;
 import ghidra.program.model.address.Address;
-import ghidra.program.model.lang.CompilerSpec;
 import ghidra.program.model.lang.CompilerSpecID;
 import ghidra.program.model.lang.Language;
 import ghidra.program.model.lang.LanguageID;
 import ghidra.program.model.listing.Program;
 import ghidra.program.util.DefaultLanguageService;
 import ghidra.util.Msg;
+import ghidra.util.exception.DuplicateNameException;
 import ghidra.util.task.TaskMonitor;
 import ghidrassistmcp.GhidrAssistMCPBackend;
 import ghidrassistmcp.GhidrAssistMCPManager;
 import ghidrassistmcp.McpTool;
+import ghidrassistmcp.tasks.McpTaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /**
  * MCP tool that imports a binary file into the active Ghidra project.
- * Supports raw binary imports with configurable language, base address,
- * file offset, and length — mirroring the manual File -> Import File dialog.
+ * Detects the executable format or explicitly loads raw bytes with a user-selected language.
  *
  * Disabled by default because it exposes host file-system read access.
  */
@@ -48,7 +48,7 @@ public class ImportFileTool implements McpTool {
     public String getDescription() {
         return "Import a binary file into the current Ghidra project. " +
                "Supports raw binary imports with configurable language/processor, " +
-               "base address, file offset, and length. " +
+               "and base address. " +
                "SECURITY: This tool can read files from the host file system - " +
                "it is disabled by default and must be explicitly enabled. " +
                "Example: {\"file_path\": \"C:/roms/bank00.bin\", \"language\": \"6502:LE:16:default\", " +
@@ -80,6 +80,8 @@ public class ImportFileTool implements McpTool {
                 Map.entry("program_name", Map.of(
                     "type", "string",
                     "description", "Name for the imported program (defaults to file name)")),
+                Map.entry("loader", Map.of("type", "string", "enum", List.of("auto", "raw"),
+                    "default", "auto", "description", "Detect the file format even when a language is supplied. Choose raw to force a flat binary import with an explicit language.")),
                 Map.entry("language", Map.of(
                     "type", "string",
                     "description", "Language ID: processor:endian:size:variant " +
@@ -87,10 +89,10 @@ public class ImportFileTool implements McpTool {
                                    "If omitted, Ghidra will attempt auto-detection.")),
                 Map.entry("compiler", Map.of(
                     "type", "string",
-                    "description", "Compiler spec ID (e.g. 'default', 'gcc', 'windows'). Defaults to 'default'.")),
+                    "description", "Compiler spec ID (e.g. 'default', 'gcc', 'windows'). Omit or use 'default' for the language's default compiler.")),
                 Map.entry("base_address", Map.of(
                     "type", "string",
-                    "description", "Base address in hex (e.g. '0x8000'). Applied after import by setting the program image base.")),
+                    "description", "Hexadecimal image base (e.g. '0x8000' or 'c000:0000' on a segmented architecture).")),
                 Map.entry("folder", Map.of(
                     "type", "string",
                     "description", "Destination folder in the Ghidra project (e.g. '/' or '/banks'). Default: '/'.")),
@@ -107,7 +109,7 @@ public class ImportFileTool implements McpTool {
 
     @Override
     public McpSchema.CallToolResult execute(Map<String, Object> arguments, Program currentProgram) {
-        return textResult("This tool requires backend context (project access).");
+        return error("This tool requires backend context (project access).");
     }
 
     @Override
@@ -116,27 +118,40 @@ public class ImportFileTool implements McpTool {
         GhidrAssistMCPManager manager = GhidrAssistMCPManager.findInstance();
         Project project = manager == null ? null : manager.getProject();
         if (project == null || project.isClosed()) {
-            return textResult("No Ghidra project is open.");
+            return error("No Ghidra project is open.");
         }
 
-        // --- Parse arguments ---
+        // Bind queued imports to the original project even if the GUI changes projects.
+        if (backend != null && backend.isAsyncExecutionEnabled()) {
+            return backend.submitToolTask(getName(), arguments, null, task ->
+                importFile(arguments, manager, project, new McpTaskMonitor(task, 0, 100, "Importing")));
+        }
+        return importFile(arguments, manager, project, TaskMonitor.DUMMY);
+    }
+
+    private McpSchema.CallToolResult importFile(Map<String, Object> arguments, GhidrAssistMCPManager manager,
+                                                Project project, TaskMonitor monitor) {
+        if (project.isClosed() || manager.getProject() != project) {
+            return error("The destination project changed before import: " + project.getName());
+        }
         String filePath = (String) arguments.get("file_path");
         if (filePath == null || filePath.isBlank()) {
-            return textResult("file_path is required.");
+            return error("file_path is required.");
         }
 
         File file = new File(filePath);
         if (!file.exists()) {
-            return textResult("File not found: " + filePath);
+            return error("File not found: " + filePath);
         }
         if (!file.isFile()) {
-            return textResult("Path is not a file: " + filePath);
+            return error("Path is not a file: " + filePath);
         }
 
         String languageStr = (String) arguments.get("language");
         String compilerStr = (String) arguments.get("compiler");
-        if (compilerStr == null || compilerStr.isBlank()) {
-            compilerStr = "default";
+        boolean raw = "raw".equals(arguments.get("loader"));
+        if (raw && (languageStr == null || languageStr.isBlank())) {
+            return error("A raw import requires an explicit language.");
         }
 
         String baseAddrStr = (String) arguments.get("base_address");
@@ -162,119 +177,51 @@ public class ImportFileTool implements McpTool {
         MessageLog messageLog = new MessageLog();
 
         try {
+            ProgramLoader.Builder loader = ProgramLoader.builder().source(file).project(project)
+                .projectFolderPath(folderPath).log(messageLog).monitor(monitor);
             if (languageStr != null && !languageStr.isBlank()) {
-                return importWithLanguage(file, project, folderPath, languageStr, compilerStr,
-                    baseAddrStr, programName, openAfterImport, suppressAnalysisPrompt,
-                    messageLog, manager);
-            } else {
-                return importAutoDetect(file, project, folderPath, baseAddrStr, programName,
-                    openAfterImport, suppressAnalysisPrompt, messageLog, manager);
+                Language language = DefaultLanguageService.getLanguageService().getLanguage(new LanguageID(languageStr));
+                loader.language(language);
+                if (compilerStr != null && !compilerStr.isBlank()) {
+                    loader.compiler("default".equals(compilerStr) ? language.getDefaultCompilerSpec() :
+                        language.getCompilerSpecByID(new CompilerSpecID(compilerStr)));
+                }
+            } else if (compilerStr != null && !compilerStr.isBlank() && !"default".equals(compilerStr)) {
+                loader.compiler(compilerStr);
             }
-        } catch (ghidra.util.exception.DuplicateNameException e) {
-            return textResult("A program with that name already exists in folder '" + folderPath +
+            if (raw) loader.loaders(BinaryLoader.class);
+            if (programName != null) loader.name(programName);
+
+            try (LoadResults<Program> loaded = loader.load()) {
+                if (loaded.size() == 0) return error("Import created no program." + formatLog(messageLog));
+                Program program = getPrimaryProgram(loaded);
+                applyBaseAddress(program, baseAddrStr);
+                if (openAfterImport && suppressAnalysisPrompt) AnalysisUtils.setAskToAnalyze(program, false);
+                monitor.checkCancelled();
+                if (project.isClosed() || manager.getProject() != project) {
+                    return error("The destination project changed before saving the import: " + project.getName());
+                }
+                loaded.save(monitor);
+                StringBuilder result = buildResultMessage(program, folderPath, messageLog);
+                if (openAfterImport) {
+                    try {
+                        manager.openProgramInCodeBrowser(project, program);
+                    } catch (RuntimeException e) {
+                        return error(result + "Saved to the project. Opening CodeBrowser failed: " + e.getMessage());
+                    }
+                    result.append("  Opened in CodeBrowser: yes\n  Should Ask To Analyze: ")
+                          .append(AnalysisUtils.shouldAskToAnalyze(program)).append("\n");
+                }
+                return McpSchema.CallToolResult.builder().addTextContent(result.toString()).build();
+            }
+        } catch (DuplicateNameException e) {
+            return error("A program with that name already exists in folder '" + folderPath +
                 "'. Use a different program_name or folder.");
         } catch (Exception e) {
             Msg.error(this, "Import failed", e);
-            return textResult("Import failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return error("Import failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
     }
-
-    private McpSchema.CallToolResult importWithLanguage(File file, Project project, String folderPath,
-            String languageStr, String compilerStr, String baseAddrStr, String programName,
-            boolean openAfterImport, boolean suppressAnalysisPrompt, MessageLog messageLog,
-            GhidrAssistMCPManager manager) throws Exception {
-
-        Language language;
-        try {
-            language = DefaultLanguageService.getLanguageService()
-                .getLanguage(new LanguageID(languageStr));
-        } catch (Exception e) {
-            return textResult("Unknown language: " + languageStr + ". " +
-                "Use format 'processor:endian:size:variant' (e.g. '6502:LE:16:default'). " +
-                "Error: " + e.getMessage());
-        }
-
-        CompilerSpec compilerSpec;
-        try {
-            compilerSpec = language.getCompilerSpecByID(new CompilerSpecID(compilerStr));
-        } catch (Exception e) {
-            return textResult("Unknown compiler spec: " + compilerStr +
-                " for language " + languageStr + ". Error: " + e.getMessage());
-        }
-
-        ProgramLoader.Builder loader = ProgramLoader.builder()
-            .source(file)
-            .project(project)
-            .projectFolderPath(folderPath)
-            .loaders(BinaryLoader.class)
-            .language(language)
-            .compiler(compilerSpec)
-            .log(messageLog)
-            .monitor(TaskMonitor.DUMMY);
-
-        if (programName != null) {
-            loader.name(programName);
-        }
-
-        try (LoadResults<Program> loadResults = loader.load()) {
-            if (loadResults.size() == 0) {
-                return textResult("Import failed - no program was created." + formatLog(messageLog));
-            }
-
-            Program importedProgram = getPrimaryProgram(loadResults);
-            applyBaseAddress(importedProgram, baseAddrStr);
-            loadResults.save(TaskMonitor.DUMMY);
-
-            StringBuilder result = buildResultMessage(importedProgram, folderPath, messageLog);
-
-            if (openAfterImport) {
-                result.append(openInCodeBrowser(manager, project, importedProgram, suppressAnalysisPrompt));
-            }
-
-            return McpSchema.CallToolResult.builder()
-                .addTextContent(result.toString())
-                .build();
-        }
-    }
-
-    private McpSchema.CallToolResult importAutoDetect(File file, Project project, String folderPath,
-            String baseAddrStr, String programName, boolean openAfterImport,
-            boolean suppressAnalysisPrompt, MessageLog messageLog, GhidrAssistMCPManager manager) throws Exception {
-
-        ProgramLoader.Builder loader = ProgramLoader.builder()
-            .source(file)
-            .project(project)
-            .projectFolderPath(folderPath)
-            .log(messageLog)
-            .monitor(TaskMonitor.DUMMY);
-
-        if (programName != null) {
-            loader.name(programName);
-        }
-
-        try (LoadResults<Program> loadResults = loader.load()) {
-            if (loadResults.size() == 0) {
-                return textResult("Import failed - Ghidra could not detect the file format." +
-                    formatLog(messageLog));
-            }
-
-            Program importedProgram = getPrimaryProgram(loadResults);
-            applyBaseAddress(importedProgram, baseAddrStr);
-            loadResults.save(TaskMonitor.DUMMY);
-
-            StringBuilder result = buildResultMessage(importedProgram, folderPath, messageLog);
-
-            if (openAfterImport) {
-                result.append(openInCodeBrowser(manager, project, importedProgram, suppressAnalysisPrompt));
-            }
-
-            return McpSchema.CallToolResult.builder()
-                .addTextContent(result.toString())
-                .build();
-        }
-    }
-
-    // --- Helpers ---
 
     private static Program getPrimaryProgram(LoadResults<Program> loadResults) {
         Program[] program = new Program[1];
@@ -282,38 +229,27 @@ public class ImportFileTool implements McpTool {
         return program[0];
     }
 
-    private static void applyBaseAddress(Program program, String baseAddrStr) {
-        if (baseAddrStr == null || baseAddrStr.isBlank()) {
-            return;
-        }
-        int txId = program.startTransaction("Set Image Base");
+    static void applyBaseAddress(Program program, String requested) throws Exception {
+        if (requested == null) return;
+        var space = program.getAddressFactory().getDefaultAddressSpace();
+        String value = requested.strip();
+        Address base = space.getAddress(value);
+        if (base == null) throw new IllegalArgumentException("Invalid image base: " + requested);
+        int transaction = program.startTransaction("Set Image Base");
+        boolean committed = false;
         try {
-            long addrValue = parseHex(baseAddrStr);
-            Address baseAddr = program.getAddressFactory()
-                .getDefaultAddressSpace().getAddress(addrValue);
-            program.setImageBase(baseAddr, true);
-            program.endTransaction(txId, true);
-        } catch (Exception e) {
-            program.endTransaction(txId, false);
-            Msg.warn(ImportFileTool.class, "Failed to set image base to " +
-                baseAddrStr + ": " + e.getMessage());
+            program.setImageBase(base, true);
+            committed = true;
+        } finally {
+            program.endTransaction(transaction, committed);
         }
-    }
-
-    private static String openInCodeBrowser(GhidrAssistMCPManager manager, Project project,
-                                            Program program, boolean suppressAnalysisPrompt) {
-        if (suppressAnalysisPrompt) {
-            AnalysisUtils.setAskToAnalyze(program, false);
-        }
-        manager.openProgramInCodeBrowser(project, program);
-        return "  Opened in CodeBrowser: yes\n" +
-               "  Should Ask To Analyze: " + AnalysisUtils.shouldAskToAnalyze(program) + "\n";
     }
 
     private static StringBuilder buildResultMessage(Program program, String folderPath,
                                                      MessageLog messageLog) {
         StringBuilder sb = new StringBuilder();
         sb.append("Successfully imported: ").append(program.getName()).append("\n");
+        sb.append("  Project Path: ").append(program.getDomainFile().getPathname()).append("\n");
         sb.append("  Language: ").append(program.getLanguageID()).append("\n");
         sb.append("  Format: ").append(program.getExecutableFormat()).append("\n");
         sb.append("  Image Base: ").append(program.getImageBase()).append("\n");
@@ -330,17 +266,7 @@ public class ImportFileTool implements McpTool {
         return "";
     }
 
-    private static McpSchema.CallToolResult textResult(String message) {
-        return McpSchema.CallToolResult.builder()
-            .addTextContent(message)
-            .build();
-    }
-
-    private static long parseHex(String value) {
-        String clean = value.strip();
-        if (clean.startsWith("0x") || clean.startsWith("0X")) {
-            clean = clean.substring(2);
-        }
-        return Long.parseUnsignedLong(clean, 16);
+    private static McpSchema.CallToolResult error(String message) {
+        return McpSchema.CallToolResult.builder().addTextContent(message).isError(true).build();
     }
 }

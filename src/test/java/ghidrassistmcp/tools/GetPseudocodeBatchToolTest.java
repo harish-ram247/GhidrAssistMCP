@@ -92,13 +92,14 @@ class GetPseudocodeBatchToolTest {
             assertFalse(Boolean.TRUE.equals(completed.isError()), text(completed));
             assertFalse(metadata(completed).containsKey("task_id"));
             assertEquals(1, metadata(completed).get("succeeded"));
+            assertEquals("void delayedBatch() {}\n", items(completed).get(0).get("code"));
             assertTrue(text(completed).contains("void delayedBatch() {}"));
             validation = McpJsonDefaults.getSchemaValidator().validate(schema, metadata(completed));
             assertTrue(validation.valid(), validation.errorMessage());
         } finally { release.countDown(); backend.shutdown(); }
     }
 
-    @Test void defaultsToCompleteCodeOnceWithProgramIdentityAndOneSession() {
+    @Test void returnsCompleteCodeInBothRepresentationsWithOneSession() {
         Fixture fixture = new Fixture();
         String first = "int first() {\n  return 123456789; /* SOURCE_ONE */\n}\n";
         String second = "int second() { return 42; /* SOURCE_TWO */ }\n";
@@ -119,8 +120,8 @@ class GetPseudocodeBatchToolTest {
         assertEquals(1, occurrences(text, second));
         assertEquals(1, occurrences(text, Fixture.PROJECT_PATH));
         assertEquals("test-program", metadata(response).get("program") instanceof Map<?, ?> identity ? identity.get("name") : null);
-        assertFalse(metadata(response).toString().contains("SOURCE_ONE"));
-        assertFalse(metadata(response).toString().contains("SOURCE_TWO"));
+        assertEquals(first, items(response).get(0).get("code"));
+        assertEquals(second, items(response).get(1).get("code"));
         assertEquals(2, metadata(response).get("succeeded"));
         assertEquals(0, metadata(response).get("failed"));
         assertEquals("demo::first", items(response).get(0).get("name"));
@@ -143,6 +144,7 @@ class GetPseudocodeBatchToolTest {
         assertFalse(response.isError(), "A partial failure must not discard later successful source");
         assertEquals(List.of("0x9999", "0x1000", "0x3000", "0x2000"),
             items(response).stream().map(item -> item.get("identifier")).toList());
+        assertNull(items(response).get(0).get("code"));
         assertEquals("not_found", failure(items(response).get(0)).get("code"));
         assertEquals("timeout", failure(items(response).get(1)).get("code"));
         assertEquals("decompilation_error", failure(items(response).get(2)).get("code"));
@@ -174,6 +176,7 @@ class GetPseudocodeBatchToolTest {
 
         assertFalse(response.isError());
         assertPage(items(response).get(0), 2, 2, 3, false);
+        assertEquals("second-line\r\n", items(response).get(0).get("code"));
         assertTrue(text(response).contains("second-line\r\n"));
         assertFalse(text(response).contains("first-line"));
         assertFalse(text(response).contains("third-line"));

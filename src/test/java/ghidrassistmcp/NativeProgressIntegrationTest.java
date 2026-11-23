@@ -166,6 +166,28 @@ class NativeProgressIntegrationTest {
 
     @ParameterizedTest
     @EnumSource(Transport.class)
+    void explicitBackgroundAnalysisReturnsJobBeforeAnalysisFinishes(Transport transport) throws Exception {
+        try (Fixture fixture = new Fixture(); WireClient wire = fixture.connect(transport)) {
+            fixture.blockAnalysis = true;
+            wire.toolCall("background-analysis", "analyze_program",
+                Map.of("background", true, "options", Map.of("fixture", true)), "analysis-token");
+            JsonNode handle = wire.response("background-analysis").path("result").path("structuredContent");
+            assertEquals("analyze_program", handle.path("tool").asText());
+            var task = fixture.backend.getTaskManager().getTask(handle.path("task_id").asText());
+            assertNotNull(task);
+            try {
+                await(fixture.analysisEntered, "Analysis did not start in the background");
+                assertFalse(task.isTerminal());
+            } finally {
+                fixture.analysisRelease.countDown();
+            }
+            awaitNoConsumers(fixture);
+            assertTrue(task.isTerminal());
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(Transport.class)
     void canonicalRenameBatchPreservesDeferredFailureReportWithAndWithoutTokens(Transport transport) throws Exception {
         try (Fixture fixture = new Fixture(); WireClient wire = fixture.connect(transport)) {
             List<Map<String, Object>> requests = List.of(

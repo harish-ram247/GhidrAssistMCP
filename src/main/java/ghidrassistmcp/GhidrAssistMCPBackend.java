@@ -391,7 +391,7 @@ public class GhidrAssistMCPBackend implements McpBackend {
         Runnable releaseOperation = () -> { };
         try {
             releaseOperation = tool.isProjectLifecycleOperation()
-                ? projectOperationGate.acquireTransition() : projectOperationGate.acquireOperation();
+                ? projectOperationGate.acquireTransition() : projectOperationGate.acquireOperation(toolName);
             // Notify listeners of the request
             notifyToolRequest(toolName, arguments);
 
@@ -435,7 +435,8 @@ public class GhidrAssistMCPBackend implements McpBackend {
             }
 
             // Check if this is a long-running tool that should be executed asynchronously
-            if (requestMonitor == null && tool.isLongRunning() && asyncExecutionEnabled) {
+            if (tool.isLongRunning() && asyncExecutionEnabled &&
+                    (requestMonitor == null || Boolean.TRUE.equals(arguments.get("background")))) {
                 return executeToolAsync(tool, toolName, arguments,
                     tool.requiresProgramContext(arguments) ? targetProgram : null);
             }
@@ -525,22 +526,18 @@ public class GhidrAssistMCPBackend implements McpBackend {
      */
     private McpSchema.CallToolResult executeToolAsync(McpTool tool, String toolName,
                                                        Map<String, Object> arguments, Program targetProgram) {
-        // Create a reference to this backend for the async execution
-        final GhidrAssistMCPBackend backend = this;
+        return submitToolTask(toolName, arguments, targetProgram, task ->
+            normalizeLegacyResult(tool, tool.execute(arguments, targetProgram, this, task), arguments));
+    }
 
+    /** Submit work bound to the caller's target and return the standard pollable task handle. */
+    public McpSchema.CallToolResult submitToolTask(String toolName, Map<String, Object> arguments,
+            Program targetProgram, Function<McpTask, McpSchema.CallToolResult> executor) {
         McpTask task = submitTask(toolName, arguments, targetProgram, taskContext -> {
-            try {
-                McpSchema.CallToolResult result = normalizeLegacyResult(tool,
-                    tool.execute(arguments, targetProgram, backend, taskContext), arguments);
-                // Store the raw result, but retain context in the response shown to listeners.
-                // get_task_status decorates the stored result once using this task's snapshot.
-                notifyToolResponse(toolName,
-                    addActiveContextToResult(result, taskContext.getProgramContext()));
-                return result;
-            } catch (Exception e) {
-                Msg.error(this, "Async tool execution failed: " + toolName, e);
-                throw new RuntimeException(e);
-            }
+            McpSchema.CallToolResult result = executor.apply(taskContext);
+            // Polling decorates the stored raw result with the same context snapshot.
+            notifyToolResponse(toolName, addActiveContextToResult(result, taskContext.getProgramContext()));
+            return result;
         });
 
         // Return task information immediately
@@ -570,7 +567,7 @@ public class GhidrAssistMCPBackend implements McpBackend {
     public McpTask submitTask(String toolName, Map<String, Object> arguments,
                               Program targetProgram,
                               Function<McpTask, McpSchema.CallToolResult> taskExecutor) {
-        Runnable releaseOperation = projectOperationGate.acquireOperation();
+        Runnable releaseOperation = projectOperationGate.acquireOperation("job " + toolName);
         Runnable releaseProgram = () -> { };
         try {
             releaseProgram = targetProgram != null ? retainProgram(targetProgram) : () -> { };
@@ -673,7 +670,7 @@ public class GhidrAssistMCPBackend implements McpBackend {
 
     /** Generate a prompt while project changes are excluded and its program remains open. */
     public McpSchema.GetPromptResult generatePrompt(McpPrompt prompt, Map<String, String> arguments) {
-        Runnable releaseOperation = projectOperationGate.acquireOperation();
+        Runnable releaseOperation = projectOperationGate.acquireOperation("prompt " + prompt.getName());
         Runnable releaseProgram = () -> { };
         try {
             Program program = getCurrentProgram();
@@ -722,7 +719,7 @@ public class GhidrAssistMCPBackend implements McpBackend {
         }
         Map<String, String> params = resource.extractParams(uri);
         String selector = params.get("name");
-        Runnable releaseOperation = projectOperationGate.acquireOperation();
+        Runnable releaseOperation = projectOperationGate.acquireOperation("resource " + resource.getName());
         try {
             Program program = selector != null
                 ? resolveProgram(java.net.URLDecoder.decode(selector.replace("+", "%2B"), java.nio.charset.StandardCharsets.UTF_8))

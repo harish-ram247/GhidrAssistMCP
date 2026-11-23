@@ -15,6 +15,7 @@ import ghidra.framework.model.Project;
 import ghidra.framework.plugintool.PluginTool;
 import ghidra.program.model.listing.Program;
 import ghidra.util.Msg;
+import ghidra.util.exception.VersionException;
 import ghidra.util.SystemUtilities;
 import ghidra.util.task.TaskMonitor;
 import ghidrassistmcp.GhidrAssistMCPBackend;
@@ -68,6 +69,8 @@ public class OpenProgramTool implements McpTool {
                     "type", "string",
                     "description", "Project folder to search in (e.g. '/' or '/banks'). Default: search all folders."
                 )),
+                Map.entry("allow_upgrade", Map.of("type", "boolean", "default", false,
+                    "description", "Allow Ghidra to upgrade an older program database when opening it.")),
                 Map.entry("suppress_analysis_prompt", Map.of(
                     "type", "boolean",
                     "description", "Set 'Should Ask To Analyze' to false before opening. Default: true.",
@@ -212,7 +215,7 @@ public class OpenProgramTool implements McpTool {
         Program program = null;
         try {
             program = (Program) match.getDomainObject(
-                this, false, false, TaskMonitor.DUMMY);
+                this, getBoolean(arguments, "allow_upgrade", false), false, TaskMonitor.DUMMY);
 
             if (getBoolean(arguments, "suppress_analysis_prompt", true)) {
                 AnalysisUtils.setAskToAnalyze(program, false);
@@ -228,6 +231,10 @@ public class OpenProgramTool implements McpTool {
             sb.append("Should Ask To Analyze: ").append(AnalysisUtils.shouldAskToAnalyze(program)).append("\n");
             sb.append(maybeSubmitAnalysis(program, arguments, backend));
             return textResult(sb.toString().trim());
+        } catch (VersionException e) {
+            String hint = e.isUpgradable() && !getBoolean(arguments, "allow_upgrade", false)
+                ? " Use allow_upgrade=true to open this database with an upgrade." : "";
+            return errorResult("Failed to open '" + match.getPathname() + "': " + e.getMessage() + hint);
         } catch (Exception e) {
             Msg.error(this, "Failed to open program: " + match.getName(), e);
             return errorResult("Failed to open '" + match.getName() + "': " + e.getMessage());

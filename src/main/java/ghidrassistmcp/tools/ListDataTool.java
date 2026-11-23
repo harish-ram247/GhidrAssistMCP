@@ -10,6 +10,7 @@ import ghidra.program.model.data.DataType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.DataIterator;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.symbol.Symbol;
 import ghidrassistmcp.McpTool;
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -108,8 +109,9 @@ public class ListDataTool implements McpTool {
                 }
 
                 // Add symbol name if available
-                if (data.getPrimarySymbol() != null) {
-                    result.append(" (").append(data.getPrimarySymbol().getName()).append(")");
+                Symbol symbol = data.getPrimarySymbol();
+                if (symbol != null) {
+                    result.append(" (").append(symbol.getName(true)).append(")");
                 }
 
                 result.append("\n");

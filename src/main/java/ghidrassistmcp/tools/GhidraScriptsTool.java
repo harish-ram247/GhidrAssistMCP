@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -29,6 +30,7 @@ import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Program;
 import ghidra.program.util.ProgramLocation;
 import ghidra.util.Msg;
+import ghidra.util.SystemUtilities;
 import ghidra.util.task.TaskMonitor;
 import ghidrassistmcp.GhidrAssistMCPBackend;
 import ghidrassistmcp.GhidrAssistMCPManager;
@@ -142,22 +144,33 @@ public class GhidraScriptsTool implements McpTool {
                                             GhidrAssistMCPBackend backend) {
         String action = stringArg(arguments.get("action"), null);
         if (action == null) {
-            return textResult("action is required: list, get, create, delete, or run.");
+            return errorResult("action is required: list, get, create, delete, or run.");
         }
 
         try {
-            return switch (action.trim().toLowerCase()) {
+            if ("run".equalsIgnoreCase(action.trim())) return submitRun(arguments, currentProgram, backend);
+            return withScriptHost(() -> switch (action.trim().toLowerCase(Locale.ROOT)) {
                 case "list" -> listScripts(arguments);
                 case "get" -> getScript(arguments);
                 case "create" -> createScript(arguments);
                 case "delete" -> deleteScript(arguments);
-                case "run" -> submitRun(arguments, currentProgram, backend);
-                default -> textResult("Invalid action: " + action + ". Use list, get, create, delete, or run.");
-            };
+                default -> errorResult("Invalid action: " + action + ". Use list, get, create, delete, or run.");
+            });
         } catch (Exception e) {
             Msg.error(this, "scripts tool failed", e);
-            return textResult("scripts " + action + " failed: " +
+            return errorResult("scripts " + action + " failed: " +
                 e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+    }
+
+    private static McpSchema.CallToolResult withScriptHost(Callable<McpSchema.CallToolResult> action)
+            throws Exception {
+        // Serialize the first acquisition and last release with CodeBrowser's script manager.
+        SystemUtilities.runSwingNow(() -> { GhidraScriptUtil.acquireBundleHostReference(); });
+        try {
+            return action.call();
+        } finally {
+            SystemUtilities.runSwingNow(GhidraScriptUtil::releaseBundleHostReference);
         }
     }
 
@@ -235,14 +248,18 @@ public class GhidraScriptsTool implements McpTool {
     private McpSchema.CallToolResult createScript(Map<String, Object> arguments) throws IOException {
         String name = requiredName(arguments);
         ResourceFile script = resolveUserScriptPath(name, true);
-        GhidraScriptProvider provider = GhidraScriptUtil.getProvider(script);
+        // Before the file exists getProvider returns a placeholder whose template writer is a no-op.
+        String filename = script.getName().toLowerCase(Locale.ROOT);
+        GhidraScriptProvider provider = GhidraScriptUtil.getProviders().stream()
+            .filter(p -> filename.endsWith(p.getExtension().toLowerCase(Locale.ROOT)))
+            .findFirst().orElse(null);
         if (provider == null) {
-            return textResult("No Ghidra script provider for: " + script.getName());
+            return errorResult("No Ghidra script provider for: " + script.getName());
         }
 
         File file = script.getFile(false);
         if (file.exists() && !Boolean.TRUE.equals(arguments.get("overwrite"))) {
-            return textResult("User script already exists: " + file.getAbsolutePath() +
+            return errorResult("User script already exists: " + file.getAbsolutePath() +
                 "\nPass overwrite=true to replace it.");
         }
 
@@ -255,24 +272,24 @@ public class GhidraScriptsTool implements McpTool {
         }
 
         return textResult("Created user script: " + file.getAbsolutePath() +
-            "\nProvider: " + provider.getDescription());
+            "\nProvider: " + providerName(script));
     }
 
     private McpSchema.CallToolResult deleteScript(Map<String, Object> arguments) throws IOException {
         if (!Boolean.TRUE.equals(arguments.get("confirm"))) {
-            return textResult("Refusing to delete. Pass confirm=true to delete a user script.");
+            return errorResult("Refusing to delete. Pass confirm=true to delete a user script.");
         }
 
         String name = requiredName(arguments);
         ResourceFile script = resolveUserScriptPath(name, false);
         if (!script.exists() || !script.isFile()) {
-            return textResult("User script not found: " + script.getAbsolutePath());
+            return errorResult("User script not found: " + script.getAbsolutePath());
         }
 
         GhidraScriptProvider provider = GhidraScriptUtil.getProvider(script);
         boolean deleted = provider != null ? provider.deleteScript(script) : script.delete();
         if (!deleted && script.exists()) {
-            return textResult("Failed to delete user script: " + script.getAbsolutePath());
+            return errorResult("Failed to delete user script: " + script.getAbsolutePath());
         }
         return textResult("Deleted user script: " + script.getAbsolutePath());
     }
@@ -295,39 +312,41 @@ public class GhidraScriptsTool implements McpTool {
         PrintWriter writer = new PrintWriter(output, true);
 
         try {
-            String name = requiredName(arguments);
-            ResourceFile scriptFile = resolveExistingScript(name, true);
-            GhidraScriptProvider provider = GhidraScriptUtil.getProvider(scriptFile);
-            if (provider == null) {
-                return textResult("No Ghidra script provider for: " + scriptFile.getName());
-            }
+            return withScriptHost(() -> {
+                String name = requiredName(arguments);
+                ResourceFile scriptFile = resolveExistingScript(name, true);
+                GhidraScriptProvider provider = GhidraScriptUtil.getProvider(scriptFile);
+                if (provider == null) {
+                    return errorResult("No Ghidra script provider for: " + scriptFile.getName());
+                }
 
-            GhidraScript script = loadScriptInstance(
-                () -> provider.getScriptInstance(scriptFile, writer));
-            script.setSourceFile(scriptFile);
-            List<String> args = AnalysisUtils.stringList(arguments.get("args"));
-            if (args != null) {
-                script.setScriptArgs(args.toArray(String[]::new));
-            }
+                GhidraScript script = loadScriptInstance(
+                    () -> provider.getScriptInstance(scriptFile, writer));
+                script.setSourceFile(scriptFile);
+                List<String> args = AnalysisUtils.stringList(arguments.get("args"));
+                if (args != null) {
+                    script.setScriptArgs(args.toArray(String[]::new));
+                }
 
-            GhidraState state = buildState(currentProgram, backend);
-            script.execute(state, new ScriptControls(writer, writer, TaskMonitor.DUMMY));
+                GhidraState state = buildState(currentProgram, backend);
+                script.execute(state, new ScriptControls(writer, writer, TaskMonitor.DUMMY));
 
-            if (backend != null) {
-                backend.clearCache();
-            }
+                if (backend != null) {
+                    backend.clearCache();
+                }
 
-            StringBuilder sb = new StringBuilder();
-            sb.append("Script completed: ").append(scriptFile.getName()).append("\n");
-            sb.append("Provider: ").append(provider.getDescription()).append("\n\n");
-            sb.append(output);
-            return textResult(sb.toString().trim());
+                StringBuilder sb = new StringBuilder();
+                sb.append("Script completed: ").append(scriptFile.getName()).append("\n");
+                sb.append("Provider: ").append(provider.getDescription()).append("\n\n");
+                sb.append(output);
+                return textResult(sb.toString().trim());
+            });
         } catch (Exception e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
             Msg.error(this, "Failed to run script", e);
-            return textResult("Script failed: " + e.getClass().getSimpleName() + ": " +
+            return errorResult("Script failed: " + e.getClass().getSimpleName() + ": " +
                 e.getMessage() + "\n\nOutput before failure:\n" + output);
         }
     }
@@ -468,6 +487,10 @@ public class GhidraScriptsTool implements McpTool {
 
     private String nullToEmpty(String value) {
         return value != null ? value : "";
+    }
+
+    private McpSchema.CallToolResult errorResult(String message) {
+        return McpSchema.CallToolResult.builder().isError(true).addTextContent(message).build();
     }
 
     private McpSchema.CallToolResult textResult(String message) {

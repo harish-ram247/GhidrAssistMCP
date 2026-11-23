@@ -10,6 +10,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -210,22 +211,15 @@ public class ClassTool implements McpTool {
             limit = ((Number) arguments.get("limit")).intValue();
         }
 
-        Set<String> allClassNames = getAllClassNames(currentProgram);
-        List<String> resultClasses;
-
-        if (pattern != null && !pattern.trim().isEmpty()) {
-            // Filter by pattern
-            resultClasses = new ArrayList<>();
-            String searchPattern = caseSensitive ? pattern : pattern.toLowerCase();
-
-            for (String className : allClassNames) {
-                String nameToSearch = caseSensitive ? className : className.toLowerCase();
-                if (nameToSearch.contains(searchPattern)) {
-                    resultClasses.add(className);
-                }
+        List<String> resultClasses = new ArrayList<>();
+        String filter = pattern == null || pattern.isBlank() ? "" : pattern;
+        String needle = caseSensitive ? filter : filter.toLowerCase(Locale.ROOT);
+        var classes = currentProgram.getSymbolTable().getClassNamespaces();
+        while (classes.hasNext()) {
+            String name = classes.next().getName(true);
+            if ((caseSensitive ? name : name.toLowerCase(Locale.ROOT)).contains(needle)) {
+                resultClasses.add(name);
             }
-        } else {
-            resultClasses = new ArrayList<>(allClassNames);
         }
 
         Collections.sort(resultClasses);
@@ -285,7 +279,7 @@ public class ClassTool implements McpTool {
 
     // ========== SHARED HELPER METHODS ==========
 
-    private Set<String> getAllClassNames(Program program) {
+    private Set<String> getCandidateClassNames(Program program) {
         Set<String> classNames = new HashSet<>();
         SymbolTable symbolTable = program.getSymbolTable();
 
@@ -470,7 +464,7 @@ public class ClassTool implements McpTool {
     }
 
     private Namespace findClassNamespace(String className, Program program) {
-        Set<String> allClassNames = getAllClassNames(program);
+        Set<String> allClassNames = getCandidateClassNames(program);
 
         String targetClassName = null;
         for (String foundClassName : allClassNames) {

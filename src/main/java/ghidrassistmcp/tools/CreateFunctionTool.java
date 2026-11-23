@@ -170,6 +170,9 @@ public class CreateFunctionTool implements McpTool {
             if (function == null) {
                 return AttemptResult.failure("creation reported success but no function exists at the entry", false);
             }
+            if (program.getListing().getInstructionAt(entryPoint) == null) {
+                return AttemptResult.failure("no defined instruction at the function entry", !disassemble);
+            }
             if (name != null && !name.isEmpty()) {
                 stage = "rename";
                 function.setName(name, SourceType.USER_DEFINED);

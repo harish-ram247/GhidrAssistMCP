@@ -348,6 +348,12 @@ class GhidraProjectControllerTest {
             if (project != null && attachFailure != null) attachFailure.run();
             displayed = project;
         }
+        @Override public void closeDisplayedProject(Project project, boolean discardChanges) {
+            assertTrue(onEdt);
+            project.close();
+            setActiveProject(null);
+            manager.setLastOpenedProject(null);
+        }
         @Override public boolean hasRunningCommands(Project project) { assertTrue(onEdt); return busy; }
         @Override public boolean hasUnsavedToolConfiguration(Project project) { assertTrue(onEdt); return configDirty; }
         @Override public boolean hasUnsavedPluginData(Project project) { assertTrue(onEdt); return pluginDirty; }

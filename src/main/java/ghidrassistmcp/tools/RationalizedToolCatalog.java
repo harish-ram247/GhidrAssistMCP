@@ -27,6 +27,8 @@ public final class RationalizedToolCatalog {
         c.tools.add(batchPseudocode);
         c.tools.add(new GetFunctionHashTool());
         c.tools.add(new GetFunctionPrototypeTool());
+        c.tools.add(new GetDataVariableTool());
+        c.tools.add(new GetDisassemblyRangeTool());
         for (ProjectControlTool.Operation operation : ProjectControlTool.Operation.values()) {
             c.tools.add(new ProjectControlTool(operation));
         }
@@ -59,7 +61,7 @@ public final class RationalizedToolCatalog {
         tool("get_imports", "list_imports", "List imported functions and symbols with pagination.").readOnly();
         tool("get_exports", "list_exports", "List exported functions and symbols with pagination.").readOnly();
         tool("get_strings", "list_strings", "List defined string data; min_length defaults to 4, filter is a case-sensitive substring, with pagination.").readOnly();
-        tool("get_data_vars", "list_data_variables", "List defined data elements, optionally filtered by data type, with pagination.").readOnly();
+        tool("get_data_vars", "list_data_variables", "List defined data with namespace-qualified labels, optionally filtered by type. Use get_data_variable for a single address.").readOnly();
         tool("get_namespaces", "list_namespaces", "List program namespaces with pagination.").readOnly();
         tool("get_relocations", "list_relocations", "List relocation entries with pagination.").readOnly();
         tool("get_current_address", "get_current_address", "Get the cursor address from the focused CodeBrowser. This is UI context, not a program-selected query.").readOnly().context(false, true);
@@ -103,7 +105,7 @@ public final class RationalizedToolCatalog {
         action("struct", "field_xrefs", "get_structure_field_xrefs", "Find decompiler and optional instance references to a structure field, identified by field_name or field_offset, with pagination.").parameters("structure_name", "field_name", "field_offset", "instance_address", "offset", "limit").required("structure_name").oneOfParameters("field_name", "field_offset").readOnly();
 
         tool("get_code", "get_pseudocode", "Decompile one function into C-like pseudocode. Prefer get_pseudocode_batch for grouped reads.").select("format", "decompiler").parameters("function").required("function").readOnly();
-        tool("get_code", "get_disassembly", "Read existing assembly instructions and EOL comments for a function. This does not define or change instructions.").select("format", "disassembly").parameters("function").required("function").readOnly().longRunning(false);
+        tool("get_code", "get_disassembly", "Read instructions and EOL comments inside the stored function body. Use get_disassembly_range for a byte window independent of function boundaries.").select("format", "disassembly").parameters("function").required("function").readOnly().longRunning(false);
         tool("get_code", "get_pcode", "Get decompiler P-code operations for a function; raw selects a flat operation list instead of basic-block grouping.").select("format", "pcode").parameters("function", "raw").required("function").readOnly();
         tool("get_basic_blocks", "get_control_flow_graph", "Get a function's basic blocks with predecessor/successor control-flow edges.").readOnly();
         tool("rename_symbol", "rename_function", "Rename a function by its current name; new_name may include a namespace such as Namespace::Name.").select("target_type", "function").alias("function", "identifier").parameters("function", "new_name").required("function", "new_name").mutation(false, false);
@@ -113,7 +115,7 @@ public final class RationalizedToolCatalog {
         action("bookmarks", "list", "list_bookmarks", "List bookmarks, optionally filtered by a category substring.").parameters("category").readOnly();
         action("bookmarks", "set", "set_bookmark", "Set a bookmark at an address, with optional type, category, and comment; type defaults to NOTE.").parameters("address", "type", "category", "comment").required("address").mutation(false, true);
         action("bookmarks", "remove", "remove_bookmark", "Remove bookmarks at an address. Omitting type removes every bookmark type at that address.").parameters("address", "type").required("address").mutation(true, true);
-        action("classes", "list", "list_classes", "List classes with optional name-substring filtering and pagination; case_sensitive defaults to true.").parameters("pattern", "case_sensitive", "offset", "limit").readOnly().longRunning(false);
+        action("classes", "list", "list_classes", "List Ghidra class symbols by qualified name, with optional substring filtering and pagination; case_sensitive defaults to true.").parameters("pattern", "case_sensitive", "offset", "limit").readOnly().longRunning(false);
         action("classes", "get_info", "get_class_info", "Get class methods, fields, and available vtable/type information for a named class.").parameters("class_name").required("class_name").readOnly();
 
         tool("search_functions_by_name", "search_functions", "Search function names by case-insensitive substring; use list_functions for pagination or case-sensitive filtering.").readOnly();
@@ -125,7 +127,7 @@ public final class RationalizedToolCatalog {
         tool("disassemble_at", "disassemble_bytes", "Define instructions from bytes at an address/range, modifying the listing. Optional clear_existing removes existing code/data.").mutation(true, true);
         tool("get_entry_points", "list_entry_points", "List program entry-point addresses and corresponding symbols/functions.").readOnly();
 
-        action("open_program", "open", "open_program", "Open a project program by exact path or unique name, launching CodeBrowser when needed. Optional analyze_after_open submits an analysis task.").parameters("name", "folder", "suppress_analysis_prompt", "analyze_after_open", "analysis_mode", "analysis_options").required("name").context(false, false).mutation(false, false);
+        action("open_program", "open", "open_program", "Open a project program by exact path or unique name, launching CodeBrowser when needed. Optional analyze_after_open submits an analysis task.").parameters("name", "folder", "allow_upgrade", "suppress_analysis_prompt", "analyze_after_open", "analysis_mode", "analysis_options").required("name").context(false, false).mutation(false, false);
         tool("close_program", "close_program", "Close a program by name/path or the current program. Changed programs require save=true or explicit ignore_changes=true.").context(false, false).mutation(true, true);
         action("project_files", "list", "list_project_files", "List files/folders in the active Ghidra project; recursive defaults to false. Available before CodeBrowser is open.").parameters("folder", "recursive").readOnly().context(false, false);
         action("project_files", "delete", "delete_project_file", "Delete a Ghidra project file/database entry. Requires confirm=true; the original imported host file is retained.").select("target_type", "file").parameters("path", "confirm").required("path", "confirm").mutation(true, false).context(false, false);
@@ -141,11 +143,11 @@ public final class RationalizedToolCatalog {
         action("analysis_options", "apply_preset", "apply_analysis_preset", "Apply a saved Auto Analysis preset to a program.").parameters("preset_name").required("preset_name").mutation(false, true);
         action("analysis_options", "list_presets", "list_analysis_presets", "List saved Auto Analysis presets.").parameters().readOnly().context(false, false);
         action("analysis_options", "delete_preset", "delete_analysis_preset", "Delete a saved Auto Analysis preset.").parameters("preset_name").required("preset_name").mutation(true, true).context(false, false);
-        tool("analyze_program", "analyze_program", "Run Ghidra Auto Analysis on current/all open programs, with full or pending-changes mode, optional address range and option overrides.").mutation(true, false);
+        tool("analyze_program", "analyze_program", "Run Ghidra Auto Analysis on current/all open programs, with full or pending-changes mode, optional address range and option overrides. Pass background=true for a pollable task.").mutation(true, false);
         action("analysis_control", "status", "get_analysis_status", "Get Auto Analysis status for the current program or all open programs.").parameters("scope").readOnly().context(true, false);
-        action("analysis_control", "cancel", "cancel_analysis", "Request cancellation of queued/running Auto Analysis for the current program or all open programs.").parameters("scope").mutation(false, true).context(true, false);
+        action("analysis_control", "cancel", "cancel_analysis", "Request cancellation of MCP analysis and queued Ghidra analyzers. Reports whether Ghidra is still analyzing.").parameters("scope").mutation(false, true).context(true, false);
 
-        tool("import_file", "import_file", "Import a host binary into the active project, optionally opening it in CodeBrowser. Disabled by default; program_name names the imported program.").context(false, false);
+        tool("import_file", "import_file", "Import a file using format detection or an explicit raw loader. program_name sets its project filename. Returns a pollable job when async execution is enabled.").context(false, false);
         action("scripts", "list", "list_scripts", "List available Ghidra scripts with optional name filtering and pagination. Disabled by default.").parameters("filter", "user_only", "offset", "limit").readOnly().context(false, false);
         action("scripts", "get", "get_script_source", "Read a Ghidra script's source up to max_bytes. Disabled by default.").parameters("name", "max_bytes").required("name").readOnly().context(false, false);
         action("scripts", "create", "create_script", "Create a Ghidra script in the user script directory, optionally from a template. Disabled by default.").parameters("name", "source", "overwrite").required("name").mutation(true, false).context(false, false);

@@ -7,11 +7,16 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import javax.swing.KeyStroke;
 
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
+import ghidra.app.plugin.core.analysis.AutoAnalysisManagerListener;
 import ghidra.framework.options.ActionTrigger;
 import ghidra.framework.options.CustomOption;
 import ghidra.framework.options.OptionType;
@@ -20,9 +25,11 @@ import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.Program;
+import ghidra.program.util.GhidraProgramUtilities;
 import ghidra.util.Msg;
+import ghidra.util.exception.CancelledException;
 import ghidra.util.task.TaskMonitor;
-import javax.swing.KeyStroke;
+import ghidra.util.task.TaskMonitorAdapter;
 
 final class AnalysisUtils {
 
@@ -139,9 +146,20 @@ final class AnalysisUtils {
         }
     }
 
+    private static final Map<Program, List<TaskMonitor>> activeAnalyses = new HashMap<>();
+
+    static int cancelActiveAnalyses(Program program) {
+        List<TaskMonitor> monitors;
+        synchronized (activeAnalyses) {
+            monitors = List.copyOf(activeAnalyses.getOrDefault(program, List.of()));
+        }
+        monitors.forEach(TaskMonitor::cancel);
+        return monitors.size();
+    }
+
     static String runAnalysis(Program program, String mode, AddressSetView restrictSet,
-                              Map<String, Object> optionOverrides, TaskMonitor monitor) {
-        TaskMonitor activeMonitor = monitor != null ? monitor : TaskMonitor.DUMMY;
+                              Map<String, Object> optionOverrides, TaskMonitor monitor) throws CancelledException {
+        TaskMonitor activeMonitor = monitor == null || monitor == TaskMonitor.DUMMY ? new TaskMonitorAdapter(true) : monitor;
         activeMonitor.setMessage("Applying analysis options");
         List<String> optionErrors = applyAnalysisOptions(program, optionOverrides);
         if (!optionErrors.isEmpty()) {
@@ -152,19 +170,49 @@ final class AnalysisUtils {
         AutoAnalysisManager manager = getManager(program);
         long start = System.currentTimeMillis();
 
-        activeMonitor.setMessage("Starting analysis");
-        if (MODE_CHANGES.equals(normalizedMode)) {
-            if (restrictSet != null && !restrictSet.isEmpty()) {
-                return "mode 'changes' cannot be restricted to an address range. Use mode 'full'.";
-            }
-            manager.startAnalysis(activeMonitor);
-        } else {
-            manager.reAnalyzeAll(restrictSet);
-            manager.startAnalysis(activeMonitor);
+        boolean full = MODE_FULL.equals(normalizedMode);
+        if (!full && restrictSet != null && !restrictSet.isEmpty()) {
+            return "mode 'changes' cannot be restricted to an address range. Use mode 'full'.";
         }
-
-        activeMonitor.setMessage("Waiting for analysis");
-        manager.waitForAnalysis(null, activeMonitor);
+        AtomicBoolean hostCancelled = new AtomicBoolean();
+        AutoAnalysisManagerListener listener = (source, cancelled) -> {
+            if (cancelled) hostCancelled.set(true);
+        };
+        manager.addListener(listener);
+        synchronized (activeAnalyses) {
+            activeAnalyses.computeIfAbsent(program, ignored -> new ArrayList<>()).add(activeMonitor);
+        }
+        try {
+            activeMonitor.setMessage("Starting analysis");
+            activeMonitor.checkCancelled();
+            var analysisTool = manager.getAnalysisTool();
+            // GUI background commands own their transaction. With no analysis tool, Ghidra
+            // runs analyzers on our thread and expects its caller to provide the transaction.
+            Integer transaction = analysisTool == null || analysisTool.threadIsBackgroundTaskThread()
+                ? program.startTransaction("MCP Auto Analysis") : null;
+            try {
+                if (full) {
+                    manager.initializeOptions();
+                    manager.reAnalyzeAll(restrictSet);
+                }
+                manager.startAnalysis(activeMonitor);
+                activeMonitor.setMessage("Waiting for analysis");
+                manager.waitForAnalysis(null, activeMonitor);
+            } finally {
+                // Ghidra keeps completed analysis work on cancellation.
+                if (transaction != null) program.endTransaction(transaction, true);
+            }
+            activeMonitor.checkCancelled();
+            if (hostCancelled.get()) throw new CancelledException();
+            if (full && restrictSet == null) GhidraProgramUtilities.markProgramAnalyzed(program);
+        } finally {
+            manager.removeListener(listener);
+            synchronized (activeAnalyses) {
+                var monitors = activeAnalyses.get(program);
+                monitors.remove(activeMonitor);
+                if (monitors.isEmpty()) activeAnalyses.remove(program);
+            }
+        }
         long elapsed = System.currentTimeMillis() - start;
 
         StringBuilder sb = new StringBuilder();

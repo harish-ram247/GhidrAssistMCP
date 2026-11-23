@@ -141,6 +141,7 @@ configurations.isolatedRuntime.dependencies.addAll(
 
 tasks.named('test') {
     useJUnitPlatform()
+    systemProperty 'mcp.testGhidraInstallDir', file(ghidraInstallDir).canonicalPath
     dependsOn tasks.named('shadowJar')
     // Unit tests exercise one coherent public dependency set. A separate subprocess
     // test exercises the packaged shaded jar with Ghidra's original jars first.

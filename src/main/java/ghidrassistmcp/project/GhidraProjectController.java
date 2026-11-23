@@ -17,17 +17,21 @@ import java.util.function.Supplier;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 
+import docking.DefaultActionContext;
 import ghidra.framework.main.FrontEndTool;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainObject;
 import ghidra.framework.model.Project;
+import ghidra.framework.model.ProjectListener;
 import ghidra.framework.model.ProjectLocator;
 import ghidra.framework.model.ProjectManager;
+import ghidra.framework.model.ToolManager;
+import ghidra.framework.model.Workspace;
 import ghidra.framework.options.SaveState;
 import ghidra.util.SystemUtilities;
 import ghidra.util.task.TaskMonitor;
 
-/** Uses public Ghidra APIs and leaves the project-manager-owned MCP runtime alive. */
+/** GUI project lifecycle for the project-manager-owned MCP runtime. */
 public final class GhidraProjectController implements ProjectController {
     // Ghidra 12.0/12.1 DefaultProject persists project/workspace metadata in this file.
     private static final String PROJECT_STATE_FILE = "projectState";
@@ -95,11 +99,11 @@ public final class GhidraProjectController implements ProjectController {
         } catch (Exception error) {
             // Release the newly acquired project lock if UI attachment fails.
             boolean stillActive = host.projectManager().getActiveProject() == project;
-            if (!project.isClosed()) {
-                try { project.close(); } catch (RuntimeException cleanup) { error.addSuppressed(cleanup); }
-            }
-            if (stillActive) {
-                try { host.setActiveProject(null); } catch (Exception cleanup) { error.addSuppressed(cleanup); }
+            try {
+                if (stillActive && !project.isClosed()) host.closeDisplayedProject(project, true);
+                else if (!project.isClosed()) project.close();
+            } catch (Exception cleanup) {
+                error.addSuppressed(cleanup);
             }
             throw error;
         }
@@ -161,12 +165,10 @@ public final class GhidraProjectController implements ProjectController {
                         || host.hasUnsavedPluginData(project))) {
                     throw new IllegalStateException("Project or tool plugin data remains unsaved. Save it in Ghidra before closing, or use discard_changes=true. The project remains open.");
                 }
-                project.close();
-                if (!project.isClosed()) {
+                host.closeDisplayedProject(project, discardChanges);
+                if (!project.isClosed() || host.projectManager().getActiveProject() == project) {
                     throw new IllegalStateException("Ghidra did not close the project");
                 }
-                host.setActiveProject(null);
-                host.projectManager().setLastOpenedProject(null);
                 return null;
             });
             result.put("saved_files", saved);
@@ -405,10 +407,44 @@ public final class GhidraProjectController implements ProjectController {
     interface Host {
         <T> T onEdt(CheckedSupplier<T> action) throws Exception;
         ProjectManager projectManager();
-        void setActiveProject(Project project);
+        void setActiveProject(Project project) throws Exception;
+        void closeDisplayedProject(Project project, boolean discardChanges) throws Exception;
         boolean hasRunningCommands(Project project);
         boolean hasUnsavedToolConfiguration(Project project);
         boolean hasUnsavedPluginData(Project project);
+    }
+
+    /**
+     * Ghidra 12.x has no public noninteractive discard action. Its File action always
+     * saves session metadata. Snapshot exactly the frontend's registered close listeners
+     * before discarding anything, then deliver the same callback order as File > Close.
+     */
+    private static void discardProject(FrontEndTool frontEnd, Project project) throws Exception {
+        List<ProjectListener> listeners = new ArrayList<>();
+        var accessor = FrontEndTool.class.getDeclaredMethod("getListeners");
+        if (!accessor.trySetAccessible() || !(accessor.invoke(frontEnd) instanceof Iterable<?> registered)) {
+            throw new IllegalStateException("This Ghidra version cannot notify project listeners on discard");
+        }
+        for (Object listener : registered) {
+            listeners.add(ProjectListener.class.cast(listener));
+        }
+        project.close();
+        if (!project.isClosed()) throw new IllegalStateException("Ghidra did not discard the project");
+        RuntimeException failure = null;
+        try {
+            for (var listener : listeners) {
+                try {
+                    listener.projectClosed(project);
+                } catch (RuntimeException e) {
+                    if (failure == null) failure = new IllegalStateException("Project closed with listener errors", e);
+                    else failure.addSuppressed(e);
+                }
+            }
+        } finally {
+            frontEnd.setActiveProject(null);
+            frontEnd.getProjectManager().setLastOpenedProject(null);
+        }
+        if (failure != null) throw failure;
     }
 
     private static final class FrontEndHost implements Host {
@@ -420,7 +456,32 @@ public final class GhidraProjectController implements ProjectController {
             return tool;
         }
         @Override public ProjectManager projectManager() { return owner().getProjectManager(); }
-        @Override public void setActiveProject(Project project) { owner().setActiveProject(project); }
+        @Override public void setActiveProject(Project project) throws Exception {
+            // Opening without restoring session data leaves the manager with no workspace.
+            // WorkspacePanel requires an active one, even when no tools are restored.
+            ToolManager tools = project.getToolManager();
+            if (tools.getActiveWorkspace() == null) {
+                Workspace[] existing = tools.getWorkspaces();
+                Workspace workspace = existing.length == 0
+                    ? tools.createWorkspace(ToolManager.DEFAULT_WORKSPACE_NAME) : existing[0];
+                workspace.setActive();
+            }
+            owner().setActiveProject(project);
+        }
+        @Override public void closeDisplayedProject(Project project, boolean discardChanges) throws Exception {
+            FrontEndTool frontEnd = owner();
+            if (!discardChanges) {
+                // The stock close action calls every registered ProjectListener, including the
+                // recovery snapshot manager, before detaching the project from the frontend.
+                var close = frontEnd.getDockingActionsByOwnerName("FrontEndPlugin").stream()
+                    .filter(action -> action.getName().equals("Close Project")).findFirst()
+                    .orElseThrow(() -> new IllegalStateException("Ghidra's Close Project action is unavailable"));
+                close.actionPerformed(new DefaultActionContext());
+                return;
+            }
+            discardProject(frontEnd, project);
+        }
+
         @Override public boolean hasRunningCommands(Project project) {
             if (owner().isExecutingCommand()) return true;
             for (var tool : project.getToolManager().getRunningTools()) {
@@ -430,7 +491,7 @@ public final class GhidraProjectController implements ProjectController {
         }
         @Override public boolean hasUnsavedToolConfiguration(Project project) {
             for (var tool : project.getToolManager().getRunningTools()) {
-                if (tool.shouldSave()) return true;
+                if (tool.hasConfigChanged()) return true;
             }
             return false;
         }

@@ -14,9 +14,9 @@ class RationalizedToolCatalogTest {
         try {
             var all = backend.getAllTools();
             var available = backend.getAvailableTools();
-            assertEquals(101, all.size());
-            assertEquals(94, available.size());
-            assertEquals(101, all.stream().map(McpSchema.Tool::name).distinct().count());
+            assertEquals(103, all.size());
+            assertEquals(96, available.size());
+            assertEquals(103, all.stream().map(McpSchema.Tool::name).distinct().count());
             Map<String, McpSchema.Tool> tools = available.stream().collect(Collectors.toMap(McpSchema.Tool::name, t -> t));
             Set<String> hidden = Set.of("get_code", "types", "struct", "comments", "variables", "xrefs", "classes", "bookmarks", "analysis_options", "analysis_control", "project_files", "scripts", "get_function_signature");
             assertTrue(tools.keySet().stream().noneMatch(hidden::contains));
@@ -26,6 +26,12 @@ class RationalizedToolCatalogTest {
             assertNotNull(tools.get("get_pseudocode_batch").outputSchema());
             assertTrue(((Map<?, ?>) tools.get("get_pseudocode_batch").inputSchema()
                 .get("properties")).containsKey("program_name"));
+            McpSchema.Tool lookup = tools.get("get_data_variable");
+            assertTrue(lookup.annotations().readOnlyHint());
+            assertTrue(lookup.annotations().idempotentHint());
+            assertNotNull(lookup.outputSchema());
+            assertEquals(Set.of("address", "program_name"), ((Map<?, ?>) lookup.inputSchema().get("properties")).keySet());
+            assertEquals(java.util.List.of("address"), lookup.inputSchema().get("required"));
             assertTrue(tools.get("get_comment").annotations().readOnlyHint());
             assertFalse(tools.get("set_comment").annotations().readOnlyHint());
             assertTrue(tools.get("assemble_instructions").annotations().readOnlyHint());

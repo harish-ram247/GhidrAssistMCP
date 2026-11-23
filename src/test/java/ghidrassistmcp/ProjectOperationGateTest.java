@@ -12,9 +12,11 @@ class ProjectOperationGateTest {
     @Test
     void everyNormalOperationMustFinishBeforeAnExclusiveTransition() {
         ProjectOperationGate gate = new ProjectOperationGate();
-        Runnable first = gate.acquireOperation();
-        Runnable second = gate.acquireOperation();
-        assertThrows(IllegalStateException.class, gate::acquireTransition);
+        Runnable first = gate.acquireOperation("get_pseudocode");
+        Runnable second = gate.acquireOperation("job import_file");
+        String busy = assertThrows(IllegalStateException.class, gate::acquireTransition).getMessage();
+        assertTrue(busy.contains("get_pseudocode"));
+        assertTrue(busy.contains("job import_file"));
         first.run();
         first.run();
         assertThrows(IllegalStateException.class, gate::acquireTransition);

@@ -7,6 +7,7 @@ import java.util.Map;
 import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.listing.Program;
 import ghidra.util.Msg;
+import ghidra.util.exception.CancelledException;
 import ghidra.util.task.TaskMonitor;
 import ghidrassistmcp.GhidrAssistMCPBackend;
 import ghidrassistmcp.McpTool;
@@ -59,6 +60,10 @@ public class AnalyzeProgramTool implements McpTool {
                     "description", "Program scope to analyze. Default: current",
                     "enum", List.of("current", "all_open"),
                     "default", "current"
+                )),
+                Map.entry("background", Map.of(
+                    "type", "boolean", "default", false,
+                    "description", "Return a pollable task immediately when asynchronous jobs are enabled"
                 )),
                 Map.entry("mode", Map.of(
                     "type", "string",
@@ -155,6 +160,8 @@ public class AnalyzeProgramTool implements McpTool {
                 sb.append(outcome);
                 sb.append("\n\n");
                 publishProgramProgress(task, program, i, total, "Completed");
+            } catch (CancelledException e) {
+                return errorResult(sb + "Analysis cancelled for " + program.getName());
             } catch (Exception e) {
                 failed = true;
                 Msg.error(this, "Analysis failed for " + program.getName(), e);

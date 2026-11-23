@@ -2,7 +2,7 @@
 
 Reviewed against the available Ghidra 12.0/12.1 installations and current MCP/SDK documentation on 2026-10-09.
 
-GhidrAssistMCP now exposes an explicit operation catalog and an application-owned server that starts with Ghidra's project manager. The previous 49 registered definitions have been reviewed individually. The public catalog now contains 100 contracts; 93 are enabled by default, including four project lifecycle operations. Shared implementation classes avoid duplicating Ghidra logic, while operation-specific schemas and annotations improve tool discovery and distinguish reads from writes.
+GhidrAssistMCP now exposes an explicit operation catalog and an application-owned server that starts with Ghidra's project manager. The previous 49 registered definitions have been reviewed individually. The public catalog now contains 103 contracts, with 96 enabled by default, including four project lifecycle operations. Shared implementation classes avoid duplicating Ghidra logic, while operation-specific schemas and annotations improve tool discovery and distinguish reads from writes.
 
 ## Naming decisions
 
@@ -29,7 +29,7 @@ Every previous registered tool is included below. Parenthesized operations name 
 | `get_imports` | `list_imports` |
 | `get_exports` | `list_exports` |
 | `get_strings` | `list_strings` |
-| `get_data_vars` | `list_data_variables` |
+| `get_data_vars` | `list_data_variables` (qualified labels), `get_data_variable` (address lookup) |
 | `get_namespaces` | `list_namespaces` |
 | `get_relocations` | `list_relocations` |
 | `get_current_address` | `get_current_address` |
@@ -40,7 +40,7 @@ Every previous registered tool is included below. Parenthesized operations name 
 | `types` | `list_data_types (list)`, `get_data_type (get)`, `set_data_type (set)`, `create_enum (create_enum)`, `create_typedef (create_typedef)`, `delete_data_type (delete)` |
 | `xrefs` | `get_xrefs_to`, `get_xrefs_from`, `get_callers`, `get_callees`, `get_call_graph` |
 | `struct` | `create_structure (create)`, `replace_structure (modify)`, `merge_structure (merge)`, `set_structure_field (set_field)`, `name_structure_gap (name_gap)`, `infer_structure_from_variable (auto_create)`, `rename_structure_field (rename_field)`, `get_structure_field_xrefs (field_xrefs)` |
-| `get_code` | `get_pseudocode`, `get_disassembly`, `get_pcode` |
+| `get_code` | `get_pseudocode`, `get_disassembly` (stored body), `get_disassembly_range` (address window), `get_pcode` |
 | `get_basic_blocks` | `get_control_flow_graph` |
 | `rename_symbol` | `rename_function`, `rename_label` |
 | `batch_rename` | `rename_symbols_batch` |
@@ -110,7 +110,7 @@ All four expose mutation annotations, omit `program_name`, execute synchronously
 
 Ghidra's project-state save API alone writes session metadata rather than dirty program data. The controller saves changed open domain files through checked Ghidra file-save APIs before saving session state. Failures return tool errors with partial-save details, and a failed save prevents project closure. The backend uses a fail-fast project-operation gate for tools, resource reads, prompts, and asynchronous workers. A transition refuses concurrent MCP work, including cancelled tasks whose workers have not finished releasing program consumers. Program database operations remain protected from concurrent MCP lifecycle transitions. Running tool commands and busy domain-object locks prevent saving or closing, including explicit discard. Unsaved tool configuration must be saved in Ghidra before safe closure; remaining plugin unsaved-data flags also prevent safe closure after a project save. `discard_changes=true` permits dropping these unsaved states.
 
-The GUI controller writes one private project SaveState checkpoint (`GhidrAssistMCP.ProjectControl`) and verifies its persistence in the host's project-state file. This detects failed metadata writes that Ghidra's void save API otherwise reports only through a dialog. The verification uses the JDK XML parser to avoid differences in host-provided XML libraries. It follows the Ghidra 12.0/12.1 file layout and needs coverage when supported host versions change. The final close step also rechecks the active project, open-data membership, and busy files on the event thread. Plugin-specific close veto callbacks are outside the public command, data, and configuration guards used here; GUI acceptance must still cover installed plugins.
+The GUI controller writes one private project SaveState checkpoint (`GhidrAssistMCP.ProjectControl`) and verifies its persistence in the host's project-state file. This detects failed metadata writes that Ghidra's void save API otherwise reports only through a dialog. The verification uses the JDK XML parser to avoid differences in host-provided XML libraries. It follows the Ghidra 12.0–12.2 file layout and needs coverage when supported host versions change. The final close step also rechecks the active project, open-data membership, and busy files on the event thread. Normal closure then invokes Ghidra’s Close Project action and its plugin veto checks. Explicit discard delivers the project-closed notification before clearing the frontend. GUI acceptance covers both paths with the recovery snapshot plugin.
 
 ## MCP protocol and execution contracts
 

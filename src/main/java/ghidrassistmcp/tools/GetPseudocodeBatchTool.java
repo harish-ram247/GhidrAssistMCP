@@ -46,7 +46,7 @@ public final class GetPseudocodeBatchTool implements McpTool {
     @Override public boolean isIdempotent() { return true; }
     @Override public String getDescription() {
         return "Decompile a nonempty list of functions in the same program, in request order. Returns full code by default, " +
-            "once in text, with per-function identity, completeness and errors in structured metadata. " +
+            "in each successful results[].code and in readable text, with per-function ranges and errors. " +
             "Optional 1-based start_line/max_lines explicitly page each function; omitted max_lines returns all remaining lines.";
     }
     @Override public McpSchema.JsonSchema getInputSchema() {
@@ -80,6 +80,8 @@ public final class GetPseudocodeBatchTool implements McpTool {
         properties.put("identifier", Map.of("type", "string"));
         properties.put("name", Map.of("type", List.of("string", "null")));
         properties.put("address", Map.of("type", List.of("string", "null")));
+        properties.put("code", Map.of("type", List.of("string", "null"),
+            "description", "Returned pseudocode page, or null when the entry failed or was cancelled"));
         properties.put("status", Map.of("enum", List.of("success", "error", "cancelled")));
         for (String key : List.of("decompilation_complete", "complete", "truncated")) {
             properties.put(key, Map.of("type", "boolean"));
@@ -92,7 +94,7 @@ public final class GetPseudocodeBatchTool implements McpTool {
             "code", Map.of("type", "string"), "message", Map.of("type", "string")),
             "required", List.of("code", "message"), "additionalProperties", false));
         return Map.of("type", "object", "properties", properties, "required", List.of(
-            "index", "identifier", "name", "address", "status", "decompilation_complete",
+            "index", "identifier", "name", "address", "status", "code", "decompilation_complete",
             "complete", "truncated", "total_lines", "start_line", "end_line", "returned_lines"),
             "additionalProperties", false);
     }
@@ -207,16 +209,15 @@ public final class GetPseudocodeBatchTool implements McpTool {
         } finally {
             if (session != null) session.close();
         }
-        Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("program", identity);
-        metadata.put("total", identifiers.size());
-        metadata.put("succeeded", succeeded);
-        metadata.put("failed", identifiers.size() - succeeded - cancelled);
-        metadata.put("cancelled", cancelled);
-        metadata.put("results", items);
-        // Source appears only here, never duplicated in structuredContent.
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("program", identity);
+        report.put("total", identifiers.size());
+        report.put("succeeded", succeeded);
+        report.put("failed", identifiers.size() - succeeded - cancelled);
+        report.put("cancelled", cancelled);
+        report.put("results", items);
         return McpSchema.CallToolResult.builder().addTextContent(text.toString())
-            .structuredContent(metadata).isError(succeeded == 0 || cancelled != 0).build();
+            .structuredContent(report).isError(succeeded == 0 || cancelled != 0).build();
     }
 
     private static Map<String, Object> item(int index, String identifier) {
@@ -226,6 +227,7 @@ public final class GetPseudocodeBatchTool implements McpTool {
         result.put("name", null);
         result.put("address", null);
         result.put("status", "error");
+        result.put("code", null);
         result.put("decompilation_complete", false);
         result.put("complete", false);
         result.put("truncated", false);
@@ -262,6 +264,7 @@ public final class GetPseudocodeBatchTool implements McpTool {
         item.put("end_line", lastLine);
         item.put("returned_lines", lastLine - firstLine + 1);
         String page = code.substring(starts.get(firstLine - 1), lastLine == total ? code.length() : starts.get(lastLine));
+        item.put("code", page);
         text.append(item.get("index")).append(": ").append(item.get("name")).append(" @ ")
             .append(item.get("address")).append(" [lines ").append(firstLine).append('-')
             .append(lastLine).append('/').append(total).append(truncated ? "; truncated]\n" : "; complete]\n")

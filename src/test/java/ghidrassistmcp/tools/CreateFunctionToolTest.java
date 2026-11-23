@@ -22,6 +22,7 @@ import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionManager;
 import ghidra.program.model.listing.Listing;
+import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.symbol.Namespace;
@@ -46,6 +47,21 @@ class CreateFunctionToolTest {
         assertEquals(List.of(true), fixture.commits);
         assertFalse(fixture.active);
         assertEquals(List.of("previous analysis"), fixture.changes);
+    }
+
+    @Test
+    void placeholderWithoutEntryInstructionRetriesAndRollsBackIfStillUndefined() {
+        Fixture fixture = new Fixture();
+        fixture.missingInstruction = true;
+        CreateFunctionTool tool = new CreateFunctionTool(entry -> command(null, () -> {
+            fixture.defineFunction("placeholder", new AddressSet(entry));
+            return true;
+        }), (entry, range) -> command(null, () -> true));
+        var result = tool.execute(Map.of("address", "0x1000"), fixture.program);
+        assertTrue(result.isError());
+        assertTrue(text(result).contains("no defined instruction"));
+        assertEquals(List.of(false, false), fixture.commits);
+        fixture.assertOriginalState();
     }
 
     @Test
@@ -251,6 +267,7 @@ class CreateFunctionToolTest {
         private final List<String> changes = new ArrayList<>(List.of("previous analysis"));
         private boolean active;
         private boolean functionPresent;
+        private boolean missingInstruction;
         private boolean cleared;
         private String name = "FUN_1000";
         private AddressSetView body = new AddressSet(entry, entry.add(7));
@@ -297,7 +314,8 @@ class CreateFunctionToolTest {
             default -> unsupported(method);
         });
         private final Listing listing = fake(Listing.class, (method, args) -> switch (method.getName()) {
-            case "getInstructionAt" -> null;
+            case "getInstructionAt" -> functionPresent && !missingInstruction
+                ? fake(Instruction.class, (m, a) -> unsupported(m)) : null;
             case "getCodeUnitAt", "getCodeUnitContaining" -> codeUnit;
             case "createFunction" -> {
                 requireTransaction();

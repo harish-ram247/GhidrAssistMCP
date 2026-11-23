@@ -46,26 +46,25 @@ public class SearchStringsTool implements McpTool {
         int limit = 100;
         if (arguments.get("limit") instanceof Number) limit = ((Number) arguments.get("limit")).intValue();
 
-        String searchPattern = caseSensitive ? pattern : pattern.toLowerCase();
+        String searchPattern = caseSensitive ? pattern : pattern.toLowerCase(java.util.Locale.ROOT);
 
         StringBuilder result = new StringBuilder();
         result.append("Strings matching \"").append(pattern).append("\":\n\n");
 
+        StringListing strings = new StringListing();
         DataIterator dataIter = currentProgram.getListing().getDefinedData(true);
         int count = 0;
 
-        while (dataIter.hasNext() && count < limit) {
+        while (count < limit && dataIter.hasNext()) {
             Data data = dataIter.next();
-            if (data.hasStringValue()) {
-                String stringValue = data.getDefaultValueRepresentation();
-                String text = extractStringText(stringValue);
-                if (text != null) {
-                    String compareText = caseSensitive ? text : text.toLowerCase();
-                    if (compareText.contains(searchPattern)) {
-                        String display = stringValue.length() > 80 ? stringValue.substring(0, 77) + "..." : stringValue;
-                        result.append("@ ").append(data.getAddress()).append(": ").append(display).append("\n");
-                        count++;
-                    }
+            String stringValue = strings.representation(data);
+            if (stringValue != null) {
+                String text = StringListing.text(stringValue);
+                String compareText = caseSensitive ? text : text.toLowerCase(java.util.Locale.ROOT);
+                if (compareText.contains(searchPattern)) {
+                    String display = stringValue.length() > 80 ? stringValue.substring(0, 77) + "..." : stringValue;
+                    result.append("@ ").append(data.getAddress()).append(": ").append(display).append("\n");
+                    count++;
                 }
             }
         }
@@ -76,14 +75,7 @@ public class SearchStringsTool implements McpTool {
             result.append("\nFound ").append(count).append(" matching strings");
         }
 
+        strings.appendSkipped(result);
         return McpSchema.CallToolResult.builder().addTextContent(result.toString()).build();
-    }
-
-    private static String extractStringText(String repr) {
-        if (repr == null) return null;
-        int first = repr.indexOf('"');
-        int last = repr.lastIndexOf('"');
-        if (first >= 0 && last > first) return repr.substring(first + 1, last);
-        return repr;
     }
 }

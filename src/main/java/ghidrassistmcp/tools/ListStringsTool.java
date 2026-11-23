@@ -81,6 +81,7 @@ public class ListStringsTool implements McpTool {
         }
         result.append("):\n\n");
         
+        StringListing strings = new StringListing();
         DataIterator dataIter = currentProgram.getListing().getDefinedData(true);
         
         int count = 0;
@@ -90,12 +91,12 @@ public class ListStringsTool implements McpTool {
             Data data = dataIter.next();
             
             // Check if this is string data
-            if (data.hasStringValue()) {
-                String stringValue = data.getDefaultValueRepresentation();
-                String stringText = extractStringText(stringValue);
+            String stringValue = strings.representation(data);
+            if (stringValue != null) {
+                String stringText = StringListing.text(stringValue);
                 
                 // Apply minimum length filter
-                if (stringText != null && stringText.length() >= minLength) {
+                if (stringText.length() >= minLength) {
                     // Apply optional contains filter (applies before offset/limit)
                     if (filter != null && !stringText.contains(filter)) {
                         continue;
@@ -136,26 +137,9 @@ public class ListStringsTool implements McpTool {
             }
         }
         
+        strings.appendSkipped(result);
         return McpSchema.CallToolResult.builder()
             .addTextContent(result.toString())
             .build();
-    }
-
-    /**
-     * Extract the "actual" string text from Ghidra's default value representation.
-     * This is usually quoted (e.g. "\"Hello\""), sometimes with a prefix (e.g. "L\"Hello\"").
-     */
-    private static String extractStringText(String defaultValueRepresentation) {
-        if (defaultValueRepresentation == null) {
-            return null;
-        }
-
-        int firstQuote = defaultValueRepresentation.indexOf('"');
-        int lastQuote = defaultValueRepresentation.lastIndexOf('"');
-        if (firstQuote >= 0 && lastQuote > firstQuote) {
-            return defaultValueRepresentation.substring(firstQuote + 1, lastQuote);
-        }
-
-        return defaultValueRepresentation;
     }
 }

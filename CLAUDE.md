@@ -4,7 +4,7 @@ GhidrAssistMCP is a Ghidra extension exposing static analysis, annotation, proje
 
 ## Build and validation
 
-Use Java 25 or newer and the Gradle version supported by the selected Ghidra installation. The wrapper pins a supported Gradle release. The workspace's documented installation is Ghidra 12.0; Ghidra 12.1 is also available locally.
+Use Java 25 or newer and the Gradle version supported by the selected Ghidra installation. The wrapper pins a supported Gradle release. Local compatibility builds use Ghidra 12.0, 12.1, and 12.2.
 
 ```bash
 GHIDRA_INSTALL_DIR=/home/jtang613/tools/ghidra_12.0_PUBLIC /opt/gradle/bin/gradle buildExtension test
@@ -23,8 +23,8 @@ The extension ZIP is written to `dist/`. `installExtension` changes the Ghidra i
 - `GhidrAssistMCPProvider`: a per-window view of shared state. Providers never own the transport or independently load settings into the backend.
 - `GhidrAssistMCPBackend`: catalog, validation, program resolution, result/error handling, caching, resources, prompts, and jobs.
 - `GhidrAssistMCPServer`: Streamable HTTP `/mcp` plus legacy SSE `/sse` and `/message`; retains SDK server instances for live catalog changes and shutdown.
-- `tools/RationalizedToolCatalog` and `tools/ExplicitTool`: operation-specific public contracts over shared implementations. The public catalog has 100 tools, 93 enabled by default.
-- `project/`: GUI project creation/open/save/close through public Ghidra APIs and the application-owned frontend.
+- `tools/RationalizedToolCatalog` and `tools/ExplicitTool`: operation-specific public contracts over shared implementations. The public catalog has 103 tools, 96 enabled by default.
+- `project/`: GUI project creation, opening, saving, and closing in the application-owned frontend.
 - `ProjectOperationGate`: fail-fast lifecycle exclusion across tools, resources, prompts, and physical async-worker cleanup.
 - `tasks/`: custom job tracking, bounded pending work, cancellation, and execution cleanup.
 - `cache/`: program identity/revision-aware raw result caching.
@@ -34,13 +34,15 @@ Use public Ghidra APIs. Keep Swing/ProgramManager operations on the event thread
 
 ## MCP contracts
 
+The stock Close Project action delivers the frontend's project-closed callbacks. Explicit discard must also deliver them while preserving the last saved session. Ghidra 12.x exposes listener registration publicly and keeps the listener collection package-private. The discard path checks access to that collection before closing anything. Exercise both paths and reopen a project when changing the supported Ghidra versions.
+
 Use descriptive `verb_noun` names. Reads and mutations should be separate public tools; keep discriminators inside shared implementations. `get_disassembly` reads instructions, while `disassemble_bytes` changes the listing. `get_function_hash` computes SHA-256; `get_function_byte_pattern` returns a masked prefix; `get_function_prototype` reads the C declaration.
 
 Validate inputs and return `isError=true` for operation failures. Preserve all content kinds, structured content, metadata, and error flags when adding context. Output schemas must cover every successful result shape, including an initial custom async-job handle where applicable. Prefer typed results for new tools and preserve text compatibility.
 
 Program-specific tools accept `program_name`, preferably an exact project path. Unknown/ambiguous explicit targets must never fall back to an active program. Cursor tools use the focused browser. Project/job tools declare that they do not require a program. `import_file.program_name` is the new imported program's name, not a target selector.
 
-`create_project`, `open_project`, `save_project`, and `close_project` are synchronous lifecycle operations with structured results. They do not require a program or accept `program_name`. Declare `isProjectLifecycleOperation()` so the backend serializes transitions against other MCP work. Create/open never replace an active project. Open uses an exact absolute `.gpr` path with `restore_state=false` by default. Close defaults to refusing unsaved changes; `save` and `discard_changes` are explicit, mutually exclusive choices. Keep the frontend/runtime alive when a project closes. Saving project session metadata alone does not save dirty program files: use the controller's checked file-save path. Recheck the active project and open-data membership immediately before closing on the event thread. Automatic view attachment must preserve the existing configuration-dirty flag. Unsaved tool configuration/plugin data can still prevent safe closure after a project save; explicit discard is required to drop it. Running commands and busy domain-object locks always prevent saving/closing. The metadata-save receipt uses a private project SaveState checkpoint and verifies the persisted project-state file because Ghidra's void save API swallows I/O failures; use the JDK XML parser and keep this verification tested against supported host versions. The current public guards do not invoke plugin-specific close veto callbacks, so include installed plugins in GUI acceptance.
+`create_project`, `open_project`, `save_project`, and `close_project` are synchronous lifecycle operations with structured results. They do not require a program or accept `program_name`. Declare `isProjectLifecycleOperation()` so the backend serializes transitions against other MCP work. Create/open never replace an active project. Open uses an exact absolute `.gpr` path with `restore_state=false` by default. Close defaults to refusing unsaved changes; `save` and `discard_changes` are explicit, mutually exclusive choices. Keep the frontend/runtime alive when a project closes. Saving project session metadata alone does not save dirty program files: use the controller's checked file-save path. Recheck the active project and open-data membership immediately before closing on the event thread. Automatic view attachment must preserve the existing configuration-dirty flag. Unsaved tool configuration/plugin data can still prevent safe closure after a project save; explicit discard is required to drop it. Running commands and busy domain-object locks always prevent saving/closing. The metadata-save receipt uses a private project SaveState checkpoint and verifies the persisted project-state file because Ghidra's void save API swallows I/O failures; use the JDK XML parser and keep this verification tested against supported host versions. Normal closure also honors the stock action's plugin vetoes. Include installed plugins in GUI acceptance.
 
 `import_file`, `export_program`, and script operations remain disabled by default. Legacy settings migrate to canonical operations. Old backend aliases support internal compatibility only; they are not exposed as HTTP tools. Clients must refresh their catalog after upgrade.
 

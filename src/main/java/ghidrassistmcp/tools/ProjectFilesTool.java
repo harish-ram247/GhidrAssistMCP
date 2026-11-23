@@ -97,10 +97,9 @@ public class ProjectFilesTool implements McpTool {
             return errorResult("action is required: list or delete.");
         }
 
-        DomainFolder root = project.getProjectData().getRootFolder();
         return switch (action.trim().toLowerCase()) {
-            case "list" -> list(root, arguments);
-            case "delete" -> delete(root, arguments, backend);
+            case "list" -> list(project, arguments);
+            case "delete" -> delete(project.getProjectData().getRootFolder(), arguments, backend);
             default -> textResult("Invalid action: " + action + ". Use list or delete.");
         };
     }
@@ -110,7 +109,8 @@ public class ProjectFilesTool implements McpTool {
         return manager == null ? null : manager.getProject();
     }
 
-    private McpSchema.CallToolResult list(DomainFolder root, Map<String, Object> arguments) {
+    private McpSchema.CallToolResult list(Project project, Map<String, Object> arguments) {
+        DomainFolder root = project.getProjectData().getRootFolder();
         String folderPath = stringArg(arguments.get("folder"), "/");
         boolean recursive = Boolean.TRUE.equals(arguments.get("recursive"));
 
@@ -124,6 +124,8 @@ public class ProjectFilesTool implements McpTool {
         rows.sort(String.CASE_INSENSITIVE_ORDER);
 
         StringBuilder sb = new StringBuilder();
+        sb.append("Project: ").append(project.getName()).append("\n");
+        sb.append("Project path: ").append(project.getProjectLocator().getMarkerFile().getAbsolutePath()).append("\n");
         sb.append("Project entries under ").append(folder.getPathname()).append("\n\n");
         for (String row : rows) {
             sb.append(row).append("\n");
